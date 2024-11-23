@@ -217,7 +217,7 @@ def process_inputs(  # noqa: C901, PLR0912, PLR0915
 
     """
     click.echo("Processing input data.")
-
+    
     # Create output directories
     msa_dir = out_dir / "msa"
     structure_dir = out_dir / "processed" / "structures"
@@ -308,7 +308,7 @@ def process_inputs(  # noqa: C901, PLR0912, PLR0915
 
         # Keep record
         records.append(target.record)
-
+        
         # Dump structure
         struct_path = structure_dir / f"{target.record.id}.npz"
         target.structure.dump(struct_path)
@@ -408,6 +408,11 @@ def cli() -> None:
     help="Pairing strategy to use. Used only if --use_msa_server is set. Options are 'greedy' and 'complete'",
     default="greedy",
 )
+@click.option(
+    "--debug_output_recycle_steps",
+    is_flag=True,
+    help="Whether to override existing found predictions. Default is False.",
+)
 def predict(
     data: str,
     out_dir: str,
@@ -424,6 +429,7 @@ def predict(
     use_msa_server: bool = False,
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
+    debug_output_recycle_steps: bool = False,
 ) -> None:
     """Run predictions with Boltz-1."""
     # If cpu, write a friendly warning
@@ -492,6 +498,7 @@ def predict(
         "recycling_steps": recycling_steps,
         "sampling_steps": sampling_steps,
         "diffusion_samples": diffusion_samples,
+        "debug_output_recycle_steps" : debug_output_recycle_steps,
     }
     model_module: Boltz1 = Boltz1.load_from_checkpoint(
         checkpoint,

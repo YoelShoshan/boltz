@@ -63,87 +63,94 @@ class BoltzWriter(BasePredictionWriter):
 
         # Get the records
         records: list[Record] = batch["record"]
+        
+        #import ipdb;ipdb.set_trace()
 
-        # Get the predictions
-        coords = prediction["coords"]
-        coords = coords.unsqueeze(0)
+        for cycle_round in range(prediction["coords"].shape[1]):
+            # Get the predictions
+            coords = prediction["coords"][:, cycle_round, ...]
+            coords = coords.unsqueeze(0)
 
-        pad_masks = prediction["masks"]
-        if prediction.get("confidence") is not None:
-            confidences = prediction["confidence"]
-            confidences = confidences.reshape(len(records), -1).tolist()
-        else:
-            confidences = [0.0 for _ in range(len(records))]
+            pad_masks = prediction["masks"]
+            if prediction.get("confidence") is not None:
+                confidences = prediction["confidence"]
+                confidences = confidences.reshape(len(records), -1).tolist()
+            else:
+                confidences = [0.0 for _ in range(len(records))]
+            #import ipdb;ipdb.set_trace()
+            # Iterate over the records
+            for record, coord, pad_mask, _confidence in zip(
+                records, coords, pad_masks, confidences
+            ):            
+                # Load the structure
+                path = self.data_dir / f"{record.id}.npz"
+                structure: Structure = Structure.load(path)
 
-        # Iterate over the records
-        for record, coord, pad_mask, _confidence in zip(
-            records, coords, pad_masks, confidences
-        ):
-            # Load the structure
-            path = self.data_dir / f"{record.id}.npz"
-            structure: Structure = Structure.load(path)
+                # Compute chain map with masked removed, to be used later
+                chain_map = {}
+                for i, mask in enumerate(structure.mask):
+                    if mask:
+                        chain_map[len(chain_map)] = i
 
-            # Compute chain map with masked removed, to be used later
-            chain_map = {}
-            for i, mask in enumerate(structure.mask):
-                if mask:
-                    chain_map[len(chain_map)] = i
+                # Remove masked chains completely
+                structure = structure.remove_invalid_chains()
 
-            # Remove masked chains completely
-            structure = structure.remove_invalid_chains()
+                for model_idx in range(coord.shape[0]):
+                    # Get model coord
+                    model_coord = coord[model_idx]
+                    # Unpad
+                    coord_unpad = model_coord[pad_mask.bool()]
+                    coord_unpad = coord_unpad.cpu().numpy()
 
-            for model_idx in range(coord.shape[0]):
-                # Get model coord
-                model_coord = coord[model_idx]
-                # Unpad
-                coord_unpad = model_coord[pad_mask.bool()]
-                coord_unpad = coord_unpad.cpu().numpy()
+                    # New atom table
+                    atoms = structure.atoms
+                    atoms["coords"] = coord_unpad
+                    atoms["is_present"] = True
 
-                # New atom table
-                atoms = structure.atoms
-                atoms["coords"] = coord_unpad
-                atoms["is_present"] = True
+                    # Mew residue table
+                    residues = structure.residues
+                    residues["is_present"] = True
 
-                # Mew residue table
-                residues = structure.residues
-                residues["is_present"] = True
-
-                # Update the structure
-                interfaces = np.array([], dtype=Interface)
-                new_structure: Structure = replace(
-                    structure,
-                    atoms=atoms,
-                    residues=residues,
-                    interfaces=interfaces,
-                )
-
-                # Update chain info
-                chain_info = []
-                for chain in new_structure.chains:
-                    old_chain_idx = chain_map[chain["asym_id"]]
-                    old_chain_info = record.chains[old_chain_idx]
-                    new_chain_info = replace(
-                        old_chain_info,
-                        chain_id=int(chain["asym_id"]),
-                        valid=True,
+                    # Update the structure
+                    interfaces = np.array([], dtype=Interface)
+                    new_structure: Structure = replace(
+                        structure,
+                        atoms=atoms,
+                        residues=residues,
+                        interfaces=interfaces,
                     )
-                    chain_info.append(new_chain_info)
 
-                # Save the structure
-                struct_dir = self.output_dir / record.id
-                struct_dir.mkdir(exist_ok=True)
+                    # Update chain info
+                    chain_info = []
+                    for chain in new_structure.chains:
+                        old_chain_idx = chain_map[chain["asym_id"]]
+                        old_chain_info = record.chains[old_chain_idx]
+                        new_chain_info = replace(
+                            old_chain_info,
+                            chain_id=int(chain["asym_id"]),
+                            valid=True,
+                        )
+                        chain_info.append(new_chain_info)
 
-                if self.output_format == "pdb":
-                    path = struct_dir / f"{record.id}_model_{model_idx}.pdb"
-                    with path.open("w") as f:
-                        f.write(to_pdb(new_structure))
-                elif self.output_format == "mmcif":
-                    path = struct_dir / f"{record.id}_model_{model_idx}.cif"
-                    with path.open("w") as f:
-                        f.write(to_mmcif(new_structure))
-                else:
-                    path = struct_dir / f"{record.id}_model_{model_idx}.npz"
-                    np.savez_compressed(path, **asdict(new_structure))
+                    # Save the structure
+                    struct_dir = self.output_dir / record.id
+                    struct_dir.mkdir(exist_ok=True)
+
+                    recycle_postfix = ""
+                    if cycle_round > 0:
+                        recycle_postfix = f"_{cycle_round}"
+
+                    if self.output_format == "pdb":
+                        path = struct_dir / f"{record.id}_model_{model_idx}{recycle_postfix}.pdb"
+                        with path.open("w") as f:
+                            f.write(to_pdb(new_structure))
+                    elif self.output_format == "mmcif":
+                        path = struct_dir / f"{record.id}_model_{model_idx}{recycle_postfix}.cif"
+                        with path.open("w") as f:
+                            f.write(to_mmcif(new_structure))
+                    else:
+                        path = struct_dir / f"{record.id}_model_{model_idx}{recycle_postfix}.npz"
+                        np.savez_compressed(path, **asdict(new_structure))
 
     def on_predict_epoch_end(
         self,

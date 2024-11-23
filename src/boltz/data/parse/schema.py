@@ -789,7 +789,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         else:
             msg = f"Invalid constraint: {constraint}"
             raise ValueError(msg)
-
+    
     # Convert into datatypes
     atoms = np.array(atom_data, dtype=Atom)
     bonds = np.array(bond_data, dtype=Bond)

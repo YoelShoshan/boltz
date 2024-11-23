@@ -265,6 +265,10 @@ class Boltz1(LightningModule):
     ) -> dict[str, Tensor]:
         dict_out = {}
 
+        debug_output_recycle_steps = self.predict_args.get("debug_output_recycle_steps", False)        
+        all_s = []
+        all_z = []                    
+                
         # Compute input embeddings
         with torch.set_grad_enabled(
             self.training and self.structure_prediction_training
@@ -315,8 +319,15 @@ class Boltz1(LightningModule):
 
                     s, z = pairformer_module(s, z, mask=mask, pair_mask=pair_mask)
 
+                    if (i == recycling_steps) or debug_output_recycle_steps:
+                        all_s.append(s)
+                        all_z.append(z)
+
             pdistogram = self.distogram_module(z)
             dict_out = {"pdistogram": pdistogram}
+            
+        all_s = torch.cat([x[:,None,...] for x in all_s], 1) #[N, recycle step, residues num, hidden]
+        all_z = torch.cat([x[:,None,...] for x in all_z], 1) #[N, recycle step, residues num, residues num, residues num]
 
         # Compute structure module
         if self.training and self.structure_prediction_training:
@@ -330,22 +341,32 @@ class Boltz1(LightningModule):
                     multiplicity=multiplicity_diffusion_train,
                 )
             )
-
+        #import ipdb;ipdb.set_trace()
         if (not self.training) or self.confidence_prediction:
-            dict_out.update(
-                self.structure_module.sample(
-                    s_trunk=s,
-                    z_trunk=z,
-                    s_inputs=s_inputs,
-                    feats=feats,
-                    relative_position_encoding=relative_position_encoding,
-                    num_sampling_steps=num_sampling_steps,
-                    atom_mask=feats["atom_pad_mask"],
-                    multiplicity=diffusion_samples,
-                    train_accumulate_token_repr=self.training,
-                )
-            )
+            assert all_s.shape[1] == all_z.shape[1]
+            for cycle_step in range(all_s.shape[1]):
+                structure_ans = self.structure_module.sample(
+                        s_trunk=all_s[:, cycle_step, ...],
+                        z_trunk=all_z[:, cycle_step, ...],
+                        s_inputs=s_inputs,
+                        feats=feats,
+                        relative_position_encoding=relative_position_encoding,
+                        num_sampling_steps=num_sampling_steps,
+                        atom_mask=feats["atom_pad_mask"],
+                        multiplicity=diffusion_samples,
+                        train_accumulate_token_repr=self.training,
+                    )
+                for k in structure_ans.keys():
+                    if k not in dict_out:
+                        dict_out[k] = []
+                    dict_out[k].append(structure_ans[k])                
 
+            dict_out['sample_atom_coords'] = torch.cat([x[:,None,...] for x in dict_out['sample_atom_coords']], 1) #[N, recycle step, atoms num, 3]
+            if all([x is None for x in dict_out['diff_token_repr']]):
+                dict_out['diff_token_repr'] = None
+            #TODO: consider outputting distogram per cycle step when per cycle step debug output is requested.
+
+        #TODO: handle recycle traj debug output in confidence prediction as well
         if self.confidence_prediction:
             dict_out.update(
                 self.confidence_module(
@@ -1113,6 +1134,7 @@ class Boltz1(LightningModule):
         self.best_rmsd.reset()
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
+        #import ipdb;ipdb.set_trace()
         try:
             out = self(
                 batch,
